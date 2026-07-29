@@ -1,5 +1,5 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
-import admin from "npm:firebase-admin@11.11.0"
+import { createClient } from "@supabase/supabase-js"
+import admin from "firebase-admin"
 
 // 1. Standard CORS headers
 const corsHeaders = {
