@@ -2,6 +2,8 @@
   "deno.enablePaths": [
     "supabase/functions"
   ],
+  "deno.enable": true,
+  "deno.config": "./supabase/functions/deno.json",
   "deno.lint": true,
   "deno.unstable": [
     "bare-node-builtins",

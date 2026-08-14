@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-Interactive deployment pipeline for the 'case_notifications' Supabase Edge Function.
+Interactive deployment pipeline for the 'case_push_notifications' Supabase Edge Function.
 #>
 
-$FUNCTION_NAME = "case_notifications"
+$FUNCTION_NAME = "case_push_notifications"
 
 Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host "CASE Deployment Pipeline: $FUNCTION_NAME" -ForegroundColor Cyan
+Write-Host "CASE Deployment Pipeline: $FUNCTION_NAME"                 -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan
 
 Write-Host "`nSelect the environment you want to deploy to:" -ForegroundColor Cyan

@@ -1,7 +1,6 @@
 import postgres from "postgres"
 import admin from "firebase-admin"
 
-
 /**
  * ============================================================================
  * TYPES & INTERFACES
