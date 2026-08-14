@@ -4,5 +4,10 @@
 
 # dotenvx
 .env.keys
+.env
+.env.*
+.env.test
+.env.prod
 .env.local
 .env.*.local
+.env.production 

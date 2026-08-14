@@ -1,5 +1,6 @@
-import { createClient } from "@supabase/supabase-js"
+import postgres from "postgres"
 import admin from "firebase-admin"
+
 
 /**
  * ============================================================================
@@ -7,7 +8,7 @@ import admin from "firebase-admin"
  * ============================================================================
  */
 
-// Represents the payload sent by the Supabase Database Webhook
+// Represents the exact payload sent by the Supabase Database Webhook
 interface WebhookPayload {
   type: 'INSERT' | 'UPDATE' | 'DELETE';
   table: string;
@@ -21,28 +22,19 @@ interface NotificationRecord {
   id: string;
   profile_id: string; // The target user receiving the push
   title: string;
-  content: string;
+  content: string; // Represents the body/message
   notification_type?: string;
   project_id?: string;
   actor_id?: string;
   created_at: string;
 }
 
-/**
- * ============================================================================
- * INITIALIZATION & SETUP
- * ============================================================================
- */
-
-// 1. Standard CORS headers for Deno Edge Functions
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// 2. Safely initialize the Firebase Admin singleton.
-// We do this outside the Deno.serve block so it only runs once per cold start,
-// preventing memory leaks or duplicate app crashes.
+// 1. Safely initialize the Firebase Admin singleton
 const serviceAccountEnv = Deno.env.get('FIREBASE_SERVICE_ACCOUNT')
 if (!serviceAccountEnv) {
   console.error('FATAL: FIREBASE_SERVICE_ACCOUNT environment variable is missing.')
@@ -58,24 +50,29 @@ if (!serviceAccountEnv) {
   }
 }
 
+// 2. Initialize Postgres Connection Pool
+// Kept outside Deno.serve so the connection pool is reused across webhook triggers
+const dbUrl = Deno.env.get('DATABASE_URL')
+const sql = dbUrl ? postgres(dbUrl, { prepare: false }) : null;
+
 /**
  * ============================================================================
  * MAIN FUNCTION HANDLER
  * ============================================================================
  */
 Deno.serve(async (req: Request) => {
-  // 1. Handle CORS Preflight Requests from browsers/apps
+  // Handle CORS Preflight Requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    // 2. Webhook Authentication (CRUCIAL SECURITY STEP)
-    // Because this endpoint is public, we must verify it was triggered by YOUR database.
+    // 1. Webhook Authentication via Custom Secret
+    // Because Webhooks don't have user JWTs, we use a custom secret you set in the Dashboard.
     const authHeader = req.headers.get('Authorization')
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    const webhookSecret = Deno.env.get('WEBHOOK_SECRET')
     
-    if (!authHeader || authHeader !== `Bearer ${serviceRoleKey}`) {
+    if (!authHeader || authHeader !== `Bearer ${webhookSecret}`) {
       console.warn('Unauthorized execution attempt. Invalid or missing Authorization header.')
       return new Response(JSON.stringify({ error: "Unauthorized" }), { 
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -83,12 +80,11 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // 3. Parse and Validate the Webhook Payload
+    // 2. Parse and Validate Webhook Payload
     const payload: WebhookPayload = await req.json()
     const notification = payload.record 
 
-    // Exit cleanly if this isn't an insertion or lacks a target user. 
-    // Returning 200 ensures the Supabase webhook doesn't mark it as a "failed" delivery.
+    // Ignore anything that isn't a new insertion, or lacks a target user
     if (payload.type !== 'INSERT' || !notification?.profile_id) {
       return new Response(JSON.stringify({ message: "Ignored: Not a valid INSERT event or missing profile_id." }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -96,22 +92,14 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // 4. Initialize Supabase Client
-    // We use the Service Role Key here to deliberately bypass Row Level Security (RLS)
-    // so the server can securely query the private fcm_tokens table.
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')
-    if (!supabaseUrl || !serviceRoleKey) throw new Error("Missing Supabase environment variables.")
-    
-    const supabase = createClient(supabaseUrl, serviceRoleKey)
+    if (!sql) throw new Error("DATABASE_URL is missing or invalid.")
 
-    // 5. Fetch Target Device Tokens
-    // A single user might have your app installed on both a phone and a tablet.
-    const { data: tokens, error: dbError } = await supabase
-      .from('fcm_tokens')
-      .select('token')
-      .eq('profile_id', notification.profile_id)
-
-    if (dbError) throw new Error(`Database error fetching tokens: ${dbError.message}`)
+    // 3. Direct PostgreSQL Query to fetch tokens
+    const tokens = await sql<{ token: string }[]>`
+      SELECT token 
+      FROM fcm_tokens 
+      WHERE profile_id = ${notification.profile_id}
+    `
 
     if (!tokens || tokens.length === 0) {
       return new Response(JSON.stringify({ message: "Success: No active FCM tokens found for this user." }), { 
@@ -122,16 +110,14 @@ Deno.serve(async (req: Request) => {
 
     const tokenArray = tokens.map((t) => t.token)
 
-    // 6. Format the Routing Data Payload
-    // FCM strictly requires all custom `data` properties to be strings. 
-    // Passing integers or nulls here will cause Firebase to throw a silent error.
+    // 4. Format the Routing Data Payload for Firebase
     const routingData: Record<string, string> = {
       notification_type: String(notification.notification_type || 'default'),
     }
     if (notification.project_id) routingData.project_id = String(notification.project_id)
     if (notification.actor_id) routingData.actor_id = String(notification.actor_id)
 
-    // 7. Dispatch the Multicast Push Notification via Firebase
+    // 5. Dispatch the Multicast Push Notification via Firebase
     const fcmResponse = await admin.messaging().sendEachForMulticast({
       tokens: tokenArray,
       notification: {
@@ -141,9 +127,7 @@ Deno.serve(async (req: Request) => {
       data: routingData,
     })
 
-    // 8. Database Hygiene: Clean up dead/unregistered tokens
-    // If a user uninstalls the app or revokes permissions, Firebase tells us here.
-    // We actively delete dead tokens to save database space and optimize future broadcasts.
+    // 6. Database Hygiene: Clean up dead/unregistered tokens using direct SQL
     if (fcmResponse.failureCount > 0) {
       const failedTokens: string[] = []
       
@@ -157,20 +141,17 @@ Deno.serve(async (req: Request) => {
       })
 
       if (failedTokens.length > 0) {
-        const { error: deleteError } = await supabase
-          .from('fcm_tokens')
-          .delete()
-          .in('token', failedTokens)
-          
-        if (deleteError) {
-          console.error('Failed to clean up dead tokens:', deleteError)
-        } else {
+        try {
+          // Native Postgres array binding for the IN / ANY clause
+          await sql`DELETE FROM fcm_tokens WHERE token = ANY(${failedTokens})`
           console.log(`Database Hygiene: Cleaned up ${failedTokens.length} expired/invalid tokens.`)
+        } catch (deleteError) {
+          console.error('Failed to clean up dead tokens:', deleteError)
         }
       }
     }
 
-    // 9. Return Successful Execution
+    // 7. Return Successful Execution
     return new Response(JSON.stringify({ 
       success: true, 
       delivered: fcmResponse.successCount,
@@ -181,7 +162,6 @@ Deno.serve(async (req: Request) => {
     })
 
   } catch (error) {
-    // 10. Global Error Handler
     console.error('FCM Edge Function Error:', error)
     const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred in the Edge Function.'
     
