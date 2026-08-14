@@ -10,7 +10,7 @@ import admin from "firebase-admin"
 // Represents the exact payload sent by the Supabase Database Webhook
 interface WebhookPayload {
   type: 'INSERT' | 'UPDATE' | 'DELETE';
-  table: string;
+  table: string; 
   record: NotificationRecord;
   schema: string;
   old_record: null | NotificationRecord;

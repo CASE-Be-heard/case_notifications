@@ -14,7 +14,7 @@ Write-Host "1) Test Environment"
 Write-Host "2) Production Environment"
 Write-Host "3) Cancel"
 
-$choice = Read-Host "`nEnter your choice (1-3)"
+$choice = Read-Host "`nEnter your choice (1-3)" 
 
 switch ($choice) {
     '1' {
